@@ -1,5 +1,0 @@
-﻿  MinecraftBot.cpp
-C:\Users\1\source\repos\MinecraftBot\MinecraftBot\API.hpp(55,18): warning C4101: 'res': unreferenced local variable
-  (compiling source file 'MinecraftBot.cpp')
-  
-  MinecraftBot.vcxproj -> C:\Users\1\source\repos\MinecraftBot\MinecraftBot\x64\Debug\MinecraftBot.exe
