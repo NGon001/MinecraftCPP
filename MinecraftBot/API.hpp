@@ -27,10 +27,17 @@ private:
     std::string gather_url = base + "/gather";
     std::string findblock_url = base + "/find-block";
     std::string blockId_url = base + "/block-id/";
+    std::string itemId_url = base + "/item-id/";
     std::string mine_url = base + "/mine";
     std::string equipped_url = base + "/equipped";
     std::string equip_url = base + "/equip";
     std::string depositeItems_url = base + "/deposit";
+    std::string withdrawItems_url = base + "/withdraw";
+    std::string chestItemCount_url = base + "/chestItemCount";
+    std::string smelt_url = base + "/smelt";
+    std::string crafting_ingredients_url = base + "/crafting-ingredients";
+    std::string crafting_place_url = base + "/crafting-place-items";
+    std::string itemTypeToName_url = base + "/itemTypeToName";
 
     using json = nlohmann::json;
 
@@ -38,6 +45,24 @@ public:
     class Vector3 {
     public:
         double x, y, z;
+    };
+    class Chest {
+    public:
+    std::string ItemName;
+    int itemCount;
+
+    // Parsing function for Item from JSON
+    static bool ParseFromJson(const nlohmann::json& jsonData, Chest& chest) {
+        try {
+            chest.ItemName = jsonData["itemName"].get<std::string>();
+            chest.itemCount = jsonData["itemCount"].get<int>();
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Error parsing Item JSON: " << e.what() << std::endl;
+            return false;
+        }
+        return true;
+    }
     };
 
     class Player {
@@ -179,6 +204,100 @@ public:
         }
     };
 
+    class ItemRecipe {
+    public:
+        // Nested Item class
+        class Item {
+        public:
+            int id;
+            int count;
+            std::nullptr_t metadata;
+
+            Item(int id, int count, std::nullptr_t metadata = nullptr)
+                : id(id), count(count), metadata(metadata) {}
+        };
+
+        int recipeId;
+        Item result;
+        std::string ingredients;
+        std::vector<std::vector<Item>> inShape;        // 2D array for the recipe shape
+        std::vector<std::vector<int>> inShapeIds;      // 2D array for item IDs
+        std::vector<Item> delta;
+        bool requiresTable;
+
+        // Default constructor
+        ItemRecipe()
+            : recipeId(0), result(Item(0, 0)), ingredients(""),
+            inShape(), inShapeIds(), delta(), requiresTable(false) {}
+
+        // Parameterized constructor
+        ItemRecipe(int recipeId, const Item& result, const std::string& ingredients,
+            const std::vector<std::vector<Item>>& inShape,
+            const std::vector<Item>& delta, bool requiresTable)
+            : recipeId(recipeId), result(result), ingredients(ingredients),
+            inShape(inShape), delta(delta), requiresTable(requiresTable) {
+
+            // Populate inShapeIds based on inShape
+            for (const auto& row : inShape) {
+                std::vector<int> idRow;
+                for (const auto& item : row) {
+                    idRow.push_back(item.id);
+                }
+                inShapeIds.push_back(idRow);
+            }
+        }
+
+        // Deserialize from JSON (for a single recipe)
+        static ItemRecipe from_json(const json& j) {
+            int recipeId = j.at("recipeId").get<int>();
+            Item result(j.at("result").at("id").get<int>(), j.at("result").at("count").get<int>());
+            std::string ingredients = j.at("ingredients").get<std::string>();
+
+            // Parse inShape
+            std::vector<std::vector<Item>> inShape;
+            for (const auto& row : j.at("inShape")) {
+                std::vector<Item> rowItems;
+                for (const auto& item : row) {
+                    rowItems.emplace_back(item.at("id").get<int>(), item.at("count").get<int>());
+                }
+                inShape.push_back(rowItems);
+            }
+
+            // Populate inShapeIds based on inShape
+            std::vector<std::vector<int>> inShapeIds;
+            for (const auto& row : inShape) {
+                std::vector<int> idRow;
+                for (const auto& item : row) {
+                    idRow.push_back(item.id);
+                }
+                inShapeIds.push_back(idRow);
+            }
+
+            // Parse delta
+            std::vector<Item> delta;
+            for (const auto& item : j.at("delta")) {
+                delta.emplace_back(item.at("id").get<int>(), item.at("count").get<int>());
+            }
+
+            bool requiresTable = j.at("requiresTable").get<bool>();
+
+            ItemRecipe recipe(recipeId, result, ingredients, inShape, delta, requiresTable);
+            recipe.inShapeIds = inShapeIds; // Set inShapeIds after populating
+
+            return recipe;
+        }
+
+        // Deserialize from JSON (for an array of recipes)
+        static std::vector<ItemRecipe> from_json_array(const json& j) {
+            std::vector<ItemRecipe> recipes;
+            for (const auto& item : j) {
+                recipes.push_back(from_json(item));
+            }
+            return recipes;
+        }
+    };
+
+
     // Implementations are included within the class definition
     static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* output) {
         size_t total_size = size * nmemb;
@@ -256,8 +375,8 @@ public:
         curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headerData);
 
         // Set timeouts
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L); // Timeout for the entire request
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 120L); // Timeout for connection
+      //  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L); // Timeout for the entire request
+       // curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 120L); // Timeout for connection
 
         if (requestType == "POST") {
             curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postFields.c_str());
@@ -310,6 +429,8 @@ public:
             nlohmann::json jsonResponseParsed = nlohmann::json::parse(response);
             if (jsonResponseParsed["status"].get<std::string>() == "success")
                 return true;
+            if (jsonResponseParsed.contains("error"))
+                return false;
         }
         return false;
     }
@@ -351,6 +472,24 @@ public:
             }
         }
         return false;
+    } 
+    bool GetItemId(std::string name,int& blockID)
+    {
+        std::string response;
+        std::string headerData;
+        struct curl_slist* headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        if (CurlReq(itemId_url + name, "", headers, response, headerData, "GET")) {
+
+            nlohmann::json jsonResponseParsed = nlohmann::json::parse(response);
+            if(jsonResponseParsed.contains("item"))
+            {
+                blockID = jsonResponseParsed["item"].get<int>();
+                return true;
+            }
+        }
+        return false;
     }
     bool FindBlock(int resourceID, std::vector<Vector3>& positions, int maxdistance = 64)
     {
@@ -363,6 +502,8 @@ public:
 
         if (CurlReq(url, "", headers, response, headerData, "GET")) {
             nlohmann::json jsonResponseParsed = nlohmann::json::parse(response);
+            if(jsonResponseParsed.contains("error"))
+                return false;
             if (jsonResponseParsed.contains("blocks") && jsonResponseParsed["blocks"].is_array())
             {
                 for (const auto& item : jsonResponseParsed["blocks"]) {
@@ -476,6 +617,60 @@ public:
         }
         return false;
     }
+    bool Withdraw(Vector3 position, std::string ItemName, int count)
+    {
+        std::string response;
+        std::string headerData;
+        struct curl_slist* headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        std::string postFields = "{\"x\": " + std::to_string(position.x) +
+            ", \"y\": " + std::to_string(position.y) +
+            ", \"z\": " + std::to_string(position.z) +
+            ", \"itemName\": \"" + ItemName + "\"" +  // Add quotes around string fields
+            ", \"quantity\": " + std::to_string(count) +
+            "}";
+        if (CurlReq(withdrawItems_url, postFields, headers, response, headerData, "POST")) {
+
+            return true;
+        }
+        return false;
+    }
+    bool chestItemCount(Vector3 position, std::string ItemName,Chest& chest)
+    {
+        std::string response;
+        std::string headerData;
+        struct curl_slist* headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        std::string postFields = "{\"x\": " + std::to_string(position.x) +
+            ", \"y\": " + std::to_string(position.y) +
+            ", \"z\": " + std::to_string(position.z) +
+            ", \"itemName\": \"" + ItemName + "\"" +  // Add quotes around string fields 
+            "}";
+        if (CurlReq(chestItemCount_url, postFields, headers, response, headerData, "POST")) {
+            nlohmann::json jsonResponseParsed = nlohmann::json::parse(response);
+            Chest::ParseFromJson(jsonResponseParsed,chest);
+            return true;
+        }
+        return false;
+    }
+    bool Smelt(Vector3 position, std::string smeltItemName, std::string fuelItem,int smeltCount)
+    {
+        std::string response;
+        std::string headerData;
+        struct curl_slist* headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        std::string postFields = "{\"x\": " + std::to_string(position.x) +
+            ", \"y\": " + std::to_string(position.y) +
+            ", \"z\": " + std::to_string(position.z) +
+            ", \"itemName\": \"" + smeltItemName + "\"" +  // Add quotes around string fields 
+            ", \"fuelName\": \"" + fuelItem + "\"" +  // Add quotes around string fields 
+            ", \"count\": \"" + std::to_string(smeltCount) + "\"" +  // Add quotes around string fields 
+            "}";
+        if (CurlReq(smelt_url, postFields, headers, response, headerData, "POST")) {
+            return true;
+        }
+        return false;
+    }
     bool LookAtPoint(Vector3 position, bool force) {
         std::string response;        // Variable to hold the response body
         std::string headerData;      // Variable to hold the response headers
@@ -499,5 +694,73 @@ public:
             std::cerr << "Request failed." << std::endl;
             return false; // Indicate failure
         }
+    }
+    bool GetReciepeIng(int ItemType,Vector3 craftingTableLocation,bool useCraftingTable, std::vector<ItemRecipe>& itemRecipe)
+    {
+        std::string response;        // Variable to hold the response body
+        std::string headerData;      // Variable to hold the response headers
+        struct curl_slist* headers = NULL; // Pointer for request headers
+
+        std::string postFields = "{\"itemType\": " + std::to_string(ItemType) +
+            ", \"craftingTableLocation\": {\"x\": " + std::to_string(craftingTableLocation.x) +
+            ", \"y\": " + std::to_string(craftingTableLocation.y) +
+            ", \"z\": " + std::to_string(craftingTableLocation.z) +
+            "}, \"useCraftingTable\": " + (useCraftingTable ? "true" : "false") + "}";
+
+        // Log the constructed JSON for debugging
+       // std::cout << "Constructed JSON for looking at point: " << postFields << std::endl;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        // Call CurlReq to make the HTTP request
+        if (CurlReq(crafting_ingredients_url, postFields, headers, response, headerData, "POST")) {
+            nlohmann::json jsonResponseParsed = nlohmann::json::parse(response);
+            
+            if (jsonResponseParsed.contains("recipes"))
+            {        
+                itemRecipe = ItemRecipe::from_json_array(jsonResponseParsed["recipes"]);
+            }
+            return true; // Indicate success
+        }
+        else {
+            std::cerr << "Request failed." << std::endl;
+            return false; // Indicate failure
+        }
+    }
+
+    bool Craft(int itemType,Vector3 craftingTableLocation, int recipeIndex,bool useCraftingTable)
+    {
+        std::string postFields = "{\"itemType\": " + std::to_string(itemType) +
+            ", \"craftingTableLocation\": {\"x\": " + std::to_string(craftingTableLocation.x) +
+            ", \"y\": " + std::to_string(craftingTableLocation.y) +
+            ", \"z\": " + std::to_string(craftingTableLocation.z) + "}," +
+            "\"recipeIndex\": " + std::to_string(recipeIndex) +
+            ", \"useCraftingTable\": " + (useCraftingTable ? "true" : "false") + "}";
+
+            std::string response;        // Variable to hold the response body
+            std::string headerData;      // Variable to hold the response headers
+            struct curl_slist* headers = NULL; // Pointer for request headers
+            headers = curl_slist_append(headers, "Content-Type: application/json");
+            if (CurlReq(crafting_place_url, postFields, headers, response, headerData, "POST")) {
+                std::cout << response << std::endl;
+                return true;
+            }
+
+            return false;
+    }
+
+    bool itemTypeToName(int itemType)
+    {
+        std::string response;        // Variable to hold the response body
+        std::string headerData;      // Variable to hold the response headers
+        struct curl_slist* headers = NULL; // Pointer for request headers
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        std::string postFields = "{\"itemType\": " + std::to_string(itemType)  + "}";
+
+        if (CurlReq(itemTypeToName_url, postFields, headers, response, headerData, "POST")) {
+            return true;
+        }
+
+        return false;
     }
 };
